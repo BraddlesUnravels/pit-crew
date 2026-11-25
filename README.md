@@ -1,0 +1,118 @@
+# pit
+
+`pit` is a local Git helper CLI. It provides `fold`, `take` and `undo`.
+The npm package identifier (`pit-crew`) is provisional; the executable name is
+`pit`. Check package-name availability before publishing.
+
+## Requirements
+
+- Node.js 24 or newer
+- Git
+
+## Development
+
+```sh
+npm install
+npm run build
+npm test
+npm link
+```
+
+Source imports omit file extensions; the build type-checks TypeScript and
+bundles the CLI with esbuild for Node.js.
+
+## Commands
+
+### `pit fold`
+
+Previews and amends the last commit with one confirmation. If the index already
+contains staged changes, those are folded; otherwise tracked changes are staged
+and folded. Untracked files are excluded unless `-a` is supplied. With `-a`,
+untracked files are added while preserving unstaged edits to tracked files when
+there were already staged changes.
+
+The commit message is kept by default. `--edit` opens Git's configured editor.
+If the target commit appears in a known remote-tracking branch, the preview
+warns before confirmation. This check uses existing remote-tracking refs and
+does not fetch.
+
+```sh
+pit fold
+pit fold -a
+pit fold --edit
+pit fold --yes
+```
+
+`--yes` skips confirmation. `--no-verify` skips Git's pre-commit and commit-msg
+hooks.
+
+### `pit take`
+
+Copies files or folders from another branch into the working tree. Files are
+written to disk only; nothing is staged or committed.
+
+```sh
+pit take                         # pick a branch, then files/folders
+pit take feature                 # pick files/folders from feature
+pit take feature -- src/ui       # take everything under src/ui that differs
+pit take origin/main --yes -- Makefile
+```
+
+Without a branch, pit offers local and remote-tracking branches (other than the
+current one); it does not fetch. Without paths, it offers a searchable list of
+the files that are missing or different locally, plus their folders; choosing a
+folder takes every listed file beneath it. Paths after `--` are relative to the
+current directory and must match at least one differing file.
+
+Take never overwrites or deletes local files:
+
+- a file missing locally is written at its original path;
+- a byte-identical local file is skipped;
+- a differing local file is kept and the incoming file is written as a copy,
+  with `.copy` before the last extension (`button.tsx` → `button.copy.tsx`,
+  `foo.test.ts` → `foo.test.copy.ts`, `.eslintrc.json` → `.eslintrc.copy.json`,
+  `Makefile` → `Makefile.copy`, `.env` → `.env.copy`). If that name is taken,
+  pit uses `.copy-2`, `.copy-3`, …; an existing identical copy is skipped, so
+  re-running take does not create duplicates.
+
+Symlinks and submodules are reported as unsupported and skipped. Take refuses
+to run during an in-progress Git operation or with sparse checkout enabled.
+It previews the result and asks for confirmation unless `--yes` is supplied.
+
+### `pit undo`
+
+Reverses the latest pit `fold` or `take`.
+
+```sh
+pit undo
+pit undo -2
+pit undo --list
+pit undo --force
+```
+
+Undoing a fold restores the commit that was current before it; the folded
+content returns as staged changes. It must run on the fold's branch and refuses
+to move a branch that has advanced since the fold unless `--force` is provided.
+A forced undo warns and keeps the current branch tip in a backup ref before
+moving the branch.
+
+Undoing a take deletes the files it wrote and any folders it created that are
+now empty, on any branch. Files that are already gone are skipped. If a taken
+file was edited since, undo refuses unless `--force` is given; a forced undo
+warns, saves the edited content as a blob under `refs/pit/backups/`, then deletes
+the file. Taken files that were staged unchanged as new files are unstaged.
+
+`-1`, `-2` or `-3` undo that many recent actions, newest first, each recorded
+separately; undo stops at the first action it cannot reverse. Pit keeps the
+three most recent actions undoable; older ones expire (their fold backup refs
+are removed). `--yes` skips forced-undo confirmations. `--list` shows recent
+folds and takes with their status.
+
+Pit records its operations in Git metadata under `pit/journal.jsonl` and keeps
+backup refs under `refs/pit/backups/`. Incomplete journal operations are
+reconciled from the branch reflog when possible. If Git history moved in a way
+that cannot be reconciled safely, pit refuses to guess and retains the backup.
+
+On a failing hook, pit leaves `HEAD` unchanged and records no completed fold.
+The attempted staging and any hook edits may remain in the index or worktree;
+inspect them before retrying.
