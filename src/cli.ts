@@ -4,8 +4,10 @@ import { resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { fold } from "./commands/fold";
+import { flatFold } from "./commands/flat-fold";
 import { take } from "./commands/take";
 import { undo } from "./commands/undo";
+import { completeBaseBranches, zshCompletion } from "./completion";
 import type { FoldOptions } from "./commands/fold";
 import type { TakeOptions } from "./commands/take";
 import type { UndoOptions } from "./commands/undo";
@@ -14,20 +16,26 @@ function usage(): string {
   return [
     "Usage:",
     "  pit fold [-a] [--edit] [--no-verify] [--yes]",
+    "  pit fold -flat [--base <branch>] [--message <message>] [--yes]",
     "  pit take [branch] [--yes] [-- paths...]",
     "  pit undo [-1|-2|-3] [--force] [--yes]",
     "  pit undo --list",
+    "  pit completion zsh",
     "",
     "Commands:",
     "  fold      Amend the last commit with selected working changes.",
     "  take      Copy files from another branch into the working tree (unstaged).",
     "  undo      Reverse the latest pit fold or take (-2/-3 for more; up to 3 are kept).",
+    "  completion  Print shell completion setup.",
     "",
     "Options:",
     "  -a, --all       Also include untracked files.",
     "      --edit      Open the configured editor for the amended message.",
     "      --no-verify Skip Git's pre-commit and commit-msg hooks.",
     "      --yes       Skip confirmation prompts.",
+    "  -flat, --flat   Squash committed branch history against a chosen base.",
+    "      --base      Base branch for a flat fold.",
+    "      --message   New commit message for a flat fold.",
     "  -1, -2, -3      Undo the 1 (default), 2 or 3 most recent pit actions.",
     "      --force     Undo even if the branch moved or taken files were edited;",
     "                  back up what would be lost.",
@@ -56,6 +64,24 @@ function foldOptions(args: string[]): FoldOptions {
     noVerify: values["no-verify"] ?? false,
     yes: values.yes ?? false,
   };
+}
+
+function flatFoldOptions(args: string[]) {
+  const { values, positionals } = parseArgs({
+    args: args.map((arg) => arg === "-flat" ? "--flat" : arg),
+    options: {
+      flat: { type: "boolean" },
+      base: { type: "string" },
+      message: { type: "string" },
+      yes: { type: "boolean" },
+    },
+    allowPositionals: true,
+    strict: true,
+  });
+  if (positionals.length > 0) {
+    throw new Error(`Unexpected argument: ${positionals[0]}`);
+  }
+  return { base: values.base, message: values.message, yes: values.yes ?? false };
 }
 
 function takeOptions(args: string[]): TakeOptions {
@@ -124,13 +150,30 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.stdout.write(`${packageJson.version}\n`);
     return;
   }
+  if (command === "completion") {
+    if (args.length !== 1 || args[0] !== "zsh") {
+      throw new Error("Usage: pit completion zsh");
+    }
+    process.stdout.write(zshCompletion);
+    return;
+  }
+  if (command === "__complete-base") {
+    if (args.length > 0) throw new Error("Unexpected completion arguments.");
+    const branches = await completeBaseBranches(process.cwd());
+    if (branches.length > 0) process.stdout.write(`${branches.join("\n")}\n`);
+    return;
+  }
   if (command !== "fold" && command !== "take" && command !== "undo") {
     throw new Error(`Unknown command "${command}".\n\n${usage()}`);
   }
 
   const cwd = process.cwd();
   if (command === "fold") {
-    await fold(cwd, foldOptions(args));
+    if (args.includes("-flat") || args.includes("--flat")) {
+      await flatFold(cwd, flatFoldOptions(args));
+    } else {
+      await fold(cwd, foldOptions(args));
+    }
     return;
   }
   if (command === "take") {

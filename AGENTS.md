@@ -32,6 +32,9 @@ name. The current target is macOS with Node.js 24 or newer and Git.
 - `fold` uses staged changes when present; otherwise it stages tracked changes.
   Untracked files are included only with `-a`. Remote warnings use existing
   remote-tracking refs and do not fetch.
+- `fold -flat` squashes committed history after a chosen branch's merge base,
+  retaining the HEAD tree and leaving the index and worktree unchanged. It
+  previews commits, bypasses commit hooks, honors signing, and remains undoable.
 - `undo` normally refuses when the branch has moved. Forced undo warns and
   backs up the current tip. Do not silently relax these safeguards.
 - `take` writes files to disk only (never staged) and never overwrites or

@@ -18,6 +18,15 @@ export async function confirm(message: string): Promise<boolean> {
   return !clack.isCancel(answer) && answer;
 }
 
+export async function askText(message: string, nonInteractiveMessage: string): Promise<string | null> {
+  requireInteractive(nonInteractiveMessage);
+  const answer = await clack.text({
+    message,
+    validate: (value) => !value?.trim() ? "A commit message is required." : undefined,
+  });
+  return clack.isCancel(answer) ? null : answer.trim();
+}
+
 export async function chooseOne(
   message: string,
   options: Choice[],

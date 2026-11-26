@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { execFile } from "node:child_process";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import {
   chmod,
@@ -14,11 +14,13 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { main } from "../src/cli";
 import { fold } from "../src/commands/fold";
+import { flatFold } from "../src/commands/flat-fold";
 import { copyName, take } from "../src/commands/take";
 import { undo } from "../src/commands/undo";
 import { appendJournal, openJournal, readJournal, type FoldRecord } from "../src/journal";
 import { reconcilePending } from "../src/recovery";
 import { inspectRepository } from "../src/repo-state";
+import { completeBaseBranches, zshCompletion } from "../src/completion";
 
 const execFileAsync = promisify(execFile);
 let repo: string;
@@ -207,6 +209,150 @@ describe("pit fold", () => {
       phase: "completed",
       result: await head(),
     });
+  });
+});
+
+describe("pit fold -flat", () => {
+  async function featureCommits(): Promise<{ base: string; before: string }> {
+    const base = await head();
+    await git(["checkout", "-b", "feature"]);
+    await writeFile(join(repo, "tracked.txt"), "first\n");
+    await git(["add", "tracked.txt"]);
+    await git(["commit", "-m", "first feature commit"]);
+    await writeFile(join(repo, "tracked.txt"), "second\n");
+    await git(["add", "tracked.txt"]);
+    await git(["commit", "-m", "second feature commit"]);
+    return { base, before: await head() };
+  }
+
+  it("previews and flattens commits while preserving the index and worktree, then undoes", async () => {
+    const { base, before } = await featureCommits();
+    const tree = await git(["rev-parse", "HEAD^{tree}"]);
+    await writeFile(join(repo, "tracked.txt"), "staged\n");
+    await git(["add", "tracked.txt"]);
+    await writeFile(join(repo, "tracked.txt"), "unstaged\n");
+    await writeFile(join(repo, "untracked.txt"), "untracked\n");
+    const cached = await git(["diff", "--cached"]);
+    const unstaged = await git(["diff"]);
+    const output = vi.spyOn(process.stdout, "write");
+    try {
+      await flatFold(repo, { base: "main", message: "flattened", yes: true });
+      const printed = output.mock.calls.map(([text]) => String(text)).join("");
+      expect(printed).toContain("first feature commit");
+      expect(printed).toContain("second feature commit");
+      expect(printed).toContain("Commit hooks will not run");
+    } finally {
+      output.mockRestore();
+    }
+
+    expect(await git(["rev-parse", "HEAD^"])).toBe(base);
+    expect(await git(["rev-parse", "HEAD^{tree}"])).toBe(tree);
+    expect(await git(["log", "-1", "--format=%s"])).toBe("flattened");
+    expect(await git(["diff", "--cached"])).toBe(cached);
+    expect(await git(["diff"])).toBe(unstaged);
+    expect(await read("untracked.txt")).toBe("untracked\n");
+
+    await undo(repo, { force: false, list: false, yes: true });
+    expect(await head()).toBe(before);
+    expect(await git(["diff", "--cached"])).toBe(cached);
+    expect(await git(["diff"])).toBe(unstaged);
+    expect(await read("untracked.txt")).toBe("untracked\n");
+  });
+
+  it("warns when an older commit is on a remote-tracking branch", async () => {
+    await featureCommits();
+    const first = await git(["rev-parse", "HEAD^"]);
+    await git(["update-ref", "refs/remotes/origin/feature", first]);
+    const output = vi.spyOn(process.stdout, "write");
+    try {
+      await flatFold(repo, { base: "main", message: "flattened", yes: true });
+      expect(output.mock.calls.map(([text]) => String(text)).join("")).toContain("rewrites published history");
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("reconciles an interrupted flat fold using its reflog and backup", async () => {
+    const { before } = await featureCommits();
+    await flatFold(repo, { base: "main", message: "flattened", yes: true });
+    const result = await head();
+    const journal = await openJournal(repo);
+    const completed = (await readJournal(journal)).at(-1) as FoldRecord;
+    await appendJournal(journal, { ...completed, phase: "pending" });
+    await reconcilePending(repo, journal, await readJournal(journal));
+    expect((await readJournal(journal)).at(-1)).toMatchObject({
+      action: "fold", flat: true, phase: "completed", before, result,
+    });
+    await undo(repo, { force: false, list: false, yes: true });
+    expect(await head()).toBe(before);
+  });
+
+  it("does not run commit hooks during a flat fold", async () => {
+    await featureCommits();
+    const hooks = join(repo, ".githooks");
+    await mkdir(hooks);
+    await writeFile(join(hooks, "pre-commit"), "#!/bin/sh\nexit 1\n");
+    await chmod(join(hooks, "pre-commit"), 0o755);
+    await git(["config", "core.hooksPath", ".githooks"]);
+    await flatFold(repo, { base: "main", message: "flattened", yes: true });
+    expect(await git(["log", "-1", "--format=%s"])).toBe("flattened");
+  });
+
+  it("refuses fewer than two branch commits or an invalid base without changing HEAD", async () => {
+    await git(["checkout", "-b", "feature"]);
+    await writeFile(join(repo, "tracked.txt"), "one\n");
+    await git(["add", "tracked.txt"]);
+    await git(["commit", "-m", "one"]);
+    const before = await head();
+    await expect(flatFold(repo, { base: "main", message: "flattened", yes: true }))
+      .rejects.toThrow("fewer than two");
+    await expect(flatFold(repo, { base: "missing", message: "flattened", yes: true }))
+      .rejects.toThrow("not a unique");
+    expect(await head()).toBe(before);
+  });
+
+  it("rejects incompatible normal-fold options for -flat", async () => {
+    await expect(main(["fold", "-flat", "-a"])).rejects.toThrow();
+    await expect(main(["fold", "--flat", "--edit"])).rejects.toThrow();
+  });
+});
+
+describe("zsh base completion", () => {
+  it("suggests the same other local and remote branches as the flat-fold picker", async () => {
+    await git(["branch", "feature"]);
+    await git(["update-ref", "refs/remotes/origin/main", await head()]);
+    await git(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    const subdir = join(repo, "nested");
+    await mkdir(subdir);
+
+    expect(await completeBaseBranches(subdir)).toEqual(["feature", "origin/main"]);
+  });
+
+  it("registers zsh completion for both --base forms without completing other arguments", () => {
+    const result = spawnSync("zsh", ["-f"], {
+      input: `
+compdef() { : }
+pit() { printf '%s\\n' main origin/main; }
+compadd() { printf 'completion:%s\\n' "$@"; }
+compset() { printf 'prefix:%s\\n' "$@"; }
+${zshCompletion}
+words=(pit fold -flat --base ma)
+CURRENT=5
+_pit
+words=(pit fold -flat --base=ma)
+CURRENT=4
+_pit
+words=(pit take --base ma)
+CURRENT=4
+_pit || print 'other command ignored'
+`,
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.match(/completion:branches/g)).toHaveLength(2);
+    expect(result.stdout).toContain("prefix:--base=");
+    expect(result.stdout).toContain("other command ignored");
   });
 });
 

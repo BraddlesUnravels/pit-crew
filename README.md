@@ -21,6 +21,21 @@ npm link
 Source imports omit file extensions; the build type-checks TypeScript and
 bundles the CLI with esbuild for Node.js.
 
+### Zsh completion
+
+To enable tab-completion for `pit fold -flat --base`, add the following to
+`~/.zshrc` after your existing `compinit` setup:
+
+```zsh
+autoload -Uz compinit
+compinit
+source <(pit completion zsh)
+```
+
+If `compinit` is already configured, add only the `source` line. Restart the
+shell or run the `source` line in the current shell. Completion lists other
+local and remote-tracking branches without fetching.
+
 ## Commands
 
 ### `pit fold`
@@ -45,6 +60,27 @@ pit fold --yes
 
 `--yes` skips confirmation. `--no-verify` skips Git's pre-commit and commit-msg
 hooks.
+
+### `pit fold -flat`
+
+Squashes the commits after the merge base with a chosen local or remote-tracking
+branch into one commit on the current branch. Pick a base interactively or
+provide `--base`; pit does not fetch. It previews every commit being flattened,
+warns when any is reachable from a known remote-tracking branch, asks for a new
+commit message, and confirms before changing history.
+
+```sh
+pit fold -flat
+pit fold -flat --base main --message "Summarize the work" --yes
+```
+
+The new commit has the existing HEAD tree and the merge base as its sole parent.
+Merge topology within the selected range is flattened. Staged, unstaged, and
+untracked changes are left untouched. At least two commits are required; shallow
+repositories and ambiguous or missing merge bases are refused. This operation
+bypasses commit hooks but honors `commit.gpgSign`. It cannot be combined with
+`-a`, `--edit`, or `--no-verify`. Use `pit undo` to restore the previous branch
+tip while leaving the index and worktree unchanged.
 
 ### `pit take`
 
@@ -90,8 +126,9 @@ pit undo --list
 pit undo --force
 ```
 
-Undoing a fold restores the commit that was current before it; the folded
-content returns as staged changes. It must run on the fold's branch and refuses
+Undoing a normal fold restores the commit that was current before it; the folded
+content returns as staged changes. Undoing a flat fold restores the original
+history without changing the index or worktree. Undo must run on the fold's branch and refuses
 to move a branch that has advanced since the fold unless `--force` is provided.
 A forced undo warns and keeps the current branch tip in a backup ref before
 moving the branch.

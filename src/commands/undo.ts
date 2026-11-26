@@ -130,7 +130,9 @@ async function undoFold(
   }
   await appendJournal(journal, { ...undoRecord, phase: "completed" });
   process.stdout.write(
-    `Restored ${foldRecord.before.slice(0, 12)}; folded changes are staged again.\n`,
+    foldRecord.flat
+      ? `Restored ${foldRecord.before.slice(0, 12)}; the index and working tree are unchanged.\n`
+      : `Restored ${foldRecord.before.slice(0, 12)}; folded changes are staged again.\n`,
   );
   return true;
 }

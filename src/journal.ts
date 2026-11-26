@@ -10,6 +10,7 @@ export interface FoldRecord {
   id: string;
   action: "fold";
   phase: JournalPhase;
+  flat?: boolean;
   branch: string;
   before: string;
   backupRef: string;
