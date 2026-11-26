@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { FILE_MODE_NON_EXECUTABLE } from "../files";
 import type { AgentManifest } from "./manifest";
 import type { RemoteRepo } from "./remote";
 
@@ -143,7 +144,9 @@ export async function writeLock(root: string, lock: AgentsLock): Promise<void> {
   await mkdir(directory, { recursive: true });
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporaryPath, `${JSON.stringify(sorted(lock), null, 2)}\n`, { mode: 0o600 });
+    await writeFile(temporaryPath, `${JSON.stringify(sorted(lock), null, 2)}\n`, {
+      mode: FILE_MODE_NON_EXECUTABLE,
+    });
     await rename(temporaryPath, path);
   } catch (error) {
     await rm(temporaryPath, { force: true });

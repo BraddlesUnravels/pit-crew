@@ -9,12 +9,20 @@ import {
   readdir,
   rm,
   symlink,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  FILE_MODE_EXECUTABLE,
+  FILE_MODE_MASK,
+  FILE_MODE_NON_EXECUTABLE,
+  sha256,
+} from "../src/files";
 import { agentsRepoUrl } from "../src/agents/config";
+import { planFiles, type DesiredFile } from "../src/agents/plan";
 import { assertName, resolveInside } from "../src/agents/names";
 import {
   classifyCloneError,
@@ -93,7 +101,7 @@ async function makeAgentsRepo(spec: AgentsRepoSpec = {}): Promise<string> {
     await mkdir(join(absolutePath, ".."), { recursive: true });
     await writeFile(absolutePath, content);
     if (path === "reviewer/scripts/audit.sh" || spec.executable?.includes(path)) {
-      await chmod(absolutePath, 0o755);
+      await chmod(absolutePath, FILE_MODE_EXECUTABLE);
     }
   }
   for (const [path, target] of Object.entries(spec.symlinks ?? {})) {
@@ -104,6 +112,16 @@ async function makeAgentsRepo(spec: AgentsRepoSpec = {}): Promise<string> {
   await gitAt(root, ["add", "-A"]);
   await gitAt(root, ["commit", "-m", "agents fixture"]);
   return pathToFileURL(root).href;
+}
+
+async function updateAgentsRepo(url: string, path: string, content: string): Promise<string> {
+  const root = fileURLToPath(url);
+  const absolutePath = join(root, path);
+  await mkdir(join(absolutePath, ".."), { recursive: true });
+  await writeFile(absolutePath, content);
+  await gitAt(root, ["add", path]);
+  await gitAt(root, ["commit", "-m", "update agents fixture"]);
+  return gitAt(root, ["rev-parse", "HEAD"]);
 }
 
 async function useGlobalConfig(options: { agentsRepo?: string } = {}): Promise<void> {
@@ -131,6 +149,26 @@ async function setupProjectRepo(): Promise<string> {
   await gitAt(root, ["add", "README.txt"]);
   await gitAt(root, ["commit", "-m", "project fixture"]);
   return root;
+}
+
+function lockWithSkillFiles(files: Array<{ path: string; content: Buffer }>) {
+  const lock = emptyLock({ url: "file:///agents", commit: "abc" });
+  lock.skills.linting = {
+    status: "installed",
+    explicit: true,
+    requiredBy: [],
+    commit: "abc",
+    files: files.map((file) => ({ path: file.path, sha256: sha256(file.content) })),
+  };
+  return lock;
+}
+
+function desiredSkillFile(content: string): DesiredFile {
+  return {
+    path: ".github/skills/linting/SKILL.md",
+    content: Buffer.from(content),
+    executable: false,
+  };
 }
 
 function captureOutput(): { stdout: ReturnType<typeof vi.spyOn>; stderr: ReturnType<typeof vi.spyOn> } {
@@ -162,9 +200,10 @@ afterEach(async () => {
 describe("agent source configuration and cloning", () => {
   it("reports the exact missing configuration message", async () => {
     await useGlobalConfig();
-    await expect(agentsRepoUrl()).rejects.toThrow(
-      "pit: no agents repository configured. Set one with: git config --global pit.agentsRepo <url>",
-    );
+    await expect(agentsRepoUrl()).rejects.toMatchObject({
+      message: "No agents repository configured. Set one with: " +
+        "git config --global pit.agentsRepo <url>",
+    });
   });
 
   it.each([
@@ -174,16 +213,18 @@ describe("agent source configuration and cloning", () => {
     "terminal prompts disabled",
     "Host key verification failed",
   ])("classifies credential error %s", (message) => {
-    expect(classifyCloneError(message, "ssh://example.invalid/agents.git").message).toContain(
-      "Git credentials for ssh://example.invalid/agents.git were rejected or need an interactive prompt.",
+    expect(classifyCloneError(message, "ssh://example.invalid/agents.git").message).toBe(
+      "Git credentials for ssh://example.invalid/agents.git were rejected or need an interactive prompt. " +
+        "Check your SSH key or credential helper.",
     );
   });
 
   it("classifies missing repositories and preserves other Git errors", () => {
-    expect(classifyCloneError("fatal: Repository not found", "url").message).toContain(
-      "does not exist or your credentials cannot access it",
+    expect(classifyCloneError("fatal: Repository not found", "url").message).toBe(
+      "Agents repository url does not exist or your credentials cannot access it.",
     );
     expect(classifyCloneError("fatal: other failure", "url").message).toBe("fatal: other failure");
+    expect(classifyCloneError("", "url").message).toBe("could not clone url");
   });
 
   it("cleans up the temporary clone when cloning a missing file URL fails", async () => {
@@ -281,6 +322,109 @@ describe("agent manifests and remote listings", () => {
   });
 });
 
+describe("file installation planning", () => {
+  const root = "/repo";
+  const owner = { kind: "skill" as const, name: "linting" };
+  const file = desiredSkillFile("new");
+
+  it("plans new, identical and unedited changed files", () => {
+    const empty = emptyLock({ url: "", commit: "" });
+    expect(planFiles(root, [{ owner, files: [file] }], [], empty, new Map(), false)
+      .actions[0]?.action).toBe("write");
+    expect(planFiles(
+      root,
+      [{ owner, files: [file] }],
+      [],
+      lockWithSkillFiles([{ path: file.path, content: file.content }]),
+      new Map([[file.path, sha256(file.content)]]),
+      false,
+    ).actions[0]?.action).toBe("skip");
+
+    const old = Buffer.from("old");
+    const lock = lockWithSkillFiles([{ path: file.path, content: old }]);
+    expect(planFiles(
+      root,
+      [{ owner, files: [file] }],
+      [],
+      lock,
+      new Map([[file.path, sha256(old)]]),
+      false,
+    ).actions[0]?.action).toBe("overwrite");
+  });
+
+  it("blocks edited files unless forced, then schedules a backup", () => {
+    const old = Buffer.from("old");
+    const lock = lockWithSkillFiles([{ path: file.path, content: old }]);
+    const localHashes = new Map([[file.path, sha256(Buffer.from("edited"))]]);
+    const blocked = planFiles(root, [{ owner, files: [file] }], [], lock, localHashes, false);
+    expect(blocked.edited).toEqual([{ path: file.path, owner }]);
+    const forced = planFiles(root, [{ owner, files: [file] }], [], lock, localHashes, true);
+    expect(forced.actions[0]?.action).toBe("overwrite");
+    expect(forced.backups).toEqual([file.path]);
+
+    const interruptedUpdate = lockWithSkillFiles([{ path: file.path, content: old }]);
+    interruptedUpdate.skills.linting!.status = "installing";
+    interruptedUpdate.skills.linting!.files.push({
+      path: file.path,
+      sha256: sha256(file.content),
+    });
+    const resumed = planFiles(
+      root,
+      [{ owner, files: [file] }],
+      [],
+      interruptedUpdate,
+      new Map([[file.path, sha256(old)]]),
+      false,
+    );
+    expect(resumed.actions[0]?.action).toBe("overwrite");
+    expect(resumed.edited).toEqual([]);
+  });
+
+  it("recreates locally deleted files and deletes files no longer wanted", () => {
+    const old = Buffer.from("old");
+    const lock = lockWithSkillFiles([{ path: file.path, content: old }]);
+    expect(planFiles(root, [{ owner, files: [file] }], [], lock, new Map([[file.path, null]]), false)
+      .actions[0]?.action).toBe("recreate");
+    expect(planFiles(root, [], [owner], lock, new Map([[file.path, sha256(old)]]), false)
+      .actions[0]?.action).toBe("delete");
+  });
+
+  it("reports unowned and multiply claimed paths as collisions", () => {
+    const empty = emptyLock({ url: "", commit: "" });
+    const unowned = planFiles(
+      root,
+      [{ owner, files: [file] }],
+      [],
+      empty,
+      new Map([[file.path, sha256(Buffer.from("local"))]]),
+      false,
+    );
+    expect(unowned.collisions).toMatchObject([{ path: file.path, reason: "unowned file" }]);
+
+    const agent = { kind: "agent" as const, name: "reviewer" };
+    const shared = planFiles(
+      root,
+      [{ owner, files: [file] }, { owner: agent, files: [file] }],
+      [],
+      empty,
+      new Map([[file.path, null]]),
+      false,
+    );
+    expect(shared.collisions[0]?.owners).toEqual(['agent "reviewer"', 'skill "linting"']);
+  });
+
+  it("rejects targets that escape the managed folders", () => {
+    expect(() => planFiles(
+      root,
+      [{ owner, files: [{ ...file, path: "../outside" }] }],
+      [],
+      emptyLock({ url: "", commit: "" }),
+      new Map(),
+      false,
+    )).toThrow("cannot contain '..'");
+  });
+});
+
 describe("agent and skill list commands", () => {
   it("prints names, descriptions, metadata and installed markers", async () => {
     const agentsRepo = await makeAgentsRepo();
@@ -369,7 +513,229 @@ describe("agent and skill list commands", () => {
     await expect(main(["agent"])).rejects.toThrow("Usage: pit agent");
     await expect(main(["skill", "unknown"])).rejects.toThrow("Usage: pit skill");
     await expect(main(["agent", "add", "reviewer"])).rejects.toThrow("not yet implemented");
-    await expect(main(["skill", "remove", "linting"])).rejects.toThrow("not yet implemented");
+    await expect(main(["skill", "add"])).rejects.toThrow("Usage: pit skill add|remove");
+  });
+});
+
+describe("skill add and remove commands", () => {
+  it("installs executable files and records the explicit skill and commit unstaged", async () => {
+    const agentsRepo = await makeAgentsRepo({ executable: ["skills/linting/SKILL.md"] });
+    await useGlobalConfig({ agentsRepo });
+    const project = await setupProjectRepo();
+    process.chdir(project);
+    const output = captureOutput();
+    try {
+      await main(["skill", "add", "linting", "--yes"]);
+      const skillPath = join(project, ".github/skills/linting/SKILL.md");
+      expect(await readFile(skillPath, "utf8")).toContain("Linting skill contents.");
+      expect((await stat(skillPath)).mode & FILE_MODE_MASK).toBe(FILE_MODE_EXECUTABLE);
+      const lock = await readLock(project);
+      expect(lock.skills.linting).toMatchObject({
+        status: "installed",
+        explicit: true,
+        requiredBy: [],
+        commit: await gitAt(fileURLToPath(agentsRepo), ["rev-parse", "HEAD"]),
+      });
+      expect(await gitAt(project, ["diff", "--cached", "--name-only"])).toBe("");
+      expect(await gitAt(project, ["status", "--porcelain"])).toContain("?? .github/");
+    } finally {
+      output.stdout.mockRestore();
+      output.stderr.mockRestore();
+    }
+  });
+
+  it("updates unedited files from a newer agents repository commit", async () => {
+    const agentsRepo = await makeAgentsRepo();
+    await useGlobalConfig({ agentsRepo });
+    const project = await setupProjectRepo();
+    process.chdir(project);
+    await main(["skill", "add", "linting", "--yes"]);
+    const updatedCommit = await updateAgentsRepo(
+      agentsRepo,
+      "skills/linting/SKILL.md",
+      "Updated linting skill.\n",
+    );
+    await main(["skill", "add", "linting", "--yes"]);
+    expect(await readFile(join(project, ".github/skills/linting/SKILL.md"), "utf8"))
+      .toBe("Updated linting skill.\n");
+    expect((await readLock(project)).skills.linting?.commit).toBe(updatedCommit);
+  });
+
+  it("blocks local edits and backs them up before a forced update", async () => {
+    const agentsRepo = await makeAgentsRepo();
+    await useGlobalConfig({ agentsRepo });
+    const project = await setupProjectRepo();
+    process.chdir(project);
+    await main(["skill", "add", "linting", "--yes"]);
+    const skillPath = join(project, ".github/skills/linting/SKILL.md");
+    await writeFile(skillPath, "local edit\n");
+    await updateAgentsRepo(agentsRepo, "skills/linting/SKILL.md", "Upstream update.\n");
+
+    await expect(main(["skill", "add", "linting", "--yes"])).rejects.toThrow("edited files");
+    const output = captureOutput();
+    try {
+      await main(["skill", "add", "linting", "--force", "--yes"]);
+      const printed = output.stdout.mock.calls.map((call: unknown[]) => String(call[0])).join("");
+      const backup = printed.match(/refs\/pit\/backups\/[^/\s]+\/1/);
+      expect(backup?.[0]).toBeDefined();
+      expect(await gitAt(project, ["cat-file", "blob", backup![0]!])).toBe("local edit");
+      expect(await readFile(skillPath, "utf8")).toBe("Upstream update.\n");
+    } finally {
+      output.stdout.mockRestore();
+      output.stderr.mockRestore();
+    }
+  });
+
+  it("refuses to overwrite an unowned skill path without writing a lock", async () => {
+    const agentsRepo = await makeAgentsRepo();
+    await useGlobalConfig({ agentsRepo });
+    const project = await setupProjectRepo();
+    const target = join(project, ".github/skills/linting/SKILL.md");
+    await mkdir(join(target, ".."), { recursive: true });
+    await writeFile(target, "unowned\n");
+    process.chdir(project);
+    await expect(main(["skill", "add", "linting", "--yes"])).rejects.toThrow("unowned file");
+    expect(await readFile(target, "utf8")).toBe("unowned\n");
+    await expect(readFile(join(project, ".github/pit-agents.lock.json"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("removes installed skill files and their empty folder", async () => {
+    const agentsRepo = await makeAgentsRepo();
+    await useGlobalConfig({ agentsRepo });
+    const project = await setupProjectRepo();
+    process.chdir(project);
+    await main(["skill", "add", "linting", "--yes"]);
+    await main(["skill", "remove", "linting", "--yes"]);
+    await expect(stat(join(project, ".github/skills/linting")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(join(project, ".github/skills"))).isDirectory()).toBe(true);
+    expect((await readLock(project)).skills).toEqual({});
+  });
+
+  it("refuses required skills and backs up edited files on forced removal", async () => {
+    const agentsRepo = await makeAgentsRepo();
+    await useGlobalConfig({ agentsRepo });
+    const project = await setupProjectRepo();
+    process.chdir(project);
+    await main(["skill", "add", "linting", "--yes"]);
+    const lock = await readLock(project);
+    lock.skills.linting!.requiredBy = ["reviewer"];
+    await writeLock(project, lock);
+    await expect(main(["skill", "remove", "linting", "--yes"]))
+      .rejects.toThrow("required by reviewer");
+    lock.skills.linting!.requiredBy = [];
+    await writeLock(project, lock);
+
+    const skillPath = join(project, ".github/skills/linting/SKILL.md");
+    await writeFile(skillPath, "edited before remove\n");
+    await expect(main(["skill", "remove", "linting", "--yes"])).rejects.toThrow("edited files");
+    const output = captureOutput();
+    try {
+      await main(["skill", "remove", "linting", "--force", "--yes"]);
+      const printed = output.stdout.mock.calls.map((call: unknown[]) => String(call[0])).join("");
+      const backup = printed.match(/refs\/pit\/backups\/[^/\s]+\/1/);
+      expect(backup?.[0]).toBeDefined();
+      expect(await gitAt(project, ["cat-file", "blob", backup![0]!]))
+        .toBe("edited before remove");
+      await expect(stat(skillPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      output.stdout.mockRestore();
+      output.stderr.mockRestore();
+    }
+  });
+
+  it("removes from the lock without contacting the configured remote", async () => {
+    await useGlobalConfig({ agentsRepo: "file:///missing-agents-repository" });
+    const project = await setupProjectRepo();
+    const content = Buffer.from("installed skill\n");
+    const path = ".github/skills/linting/SKILL.md";
+    await mkdir(join(project, path, ".."), { recursive: true });
+    await writeFile(join(project, path), content);
+    const lock = emptyLock({ url: "file:///missing-agents-repository", commit: "abc" });
+    lock.skills.linting = {
+      status: "installed",
+      explicit: true,
+      requiredBy: [],
+      commit: "abc",
+      files: [{ path, sha256: sha256(content) }],
+    };
+    await writeLock(project, lock);
+    process.chdir(project);
+    await main(["skill", "remove", "linting", "--yes"]);
+    await expect(stat(join(project, path))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reconciles an interrupted installation when add is re-run", async () => {
+    const agentsRepo = await makeAgentsRepo();
+    await useGlobalConfig({ agentsRepo });
+    const project = await setupProjectRepo();
+    const commit = await gitAt(fileURLToPath(agentsRepo), ["rev-parse", "HEAD"]);
+    const skillContent = Buffer.from([
+      "---",
+      "description: Apply linting guidance",
+      "---",
+      "Linting skill contents.",
+      "",
+    ].join("\n"));
+    const exampleContent = Buffer.from('{"strict":true}\n');
+    const mainPath = ".github/skills/linting/SKILL.md";
+    const examplePath = ".github/skills/linting/examples/rules.json";
+    const lock = emptyLock({ url: agentsRepo, commit });
+    lock.skills.linting = {
+      status: "installing",
+      explicit: true,
+      requiredBy: [],
+      commit,
+      files: [
+        { path: mainPath, sha256: sha256(skillContent) },
+        { path: examplePath, sha256: sha256(exampleContent) },
+      ],
+    };
+    await writeLock(project, lock);
+    await mkdir(join(project, mainPath, ".."), { recursive: true });
+    await writeFile(join(project, mainPath), skillContent);
+    process.chdir(project);
+    const output = captureOutput();
+    try {
+      await main(["skill", "add", "linting", "--yes"]);
+      const printed = output.stdout.mock.calls.map((call: unknown[]) => String(call[0])).join("");
+      expect(printed).toContain(
+        'pit: a previous add of linting was interrupted; re-run "pit skill add linting" to finish.',
+      );
+      expect(await readFile(join(project, examplePath), "utf8")).toBe('{"strict":true}\n');
+      expect((await readLock(project)).skills.linting?.status).toBe("installed");
+    } finally {
+      output.stdout.mockRestore();
+      output.stderr.mockRestore();
+    }
+  });
+
+  it("preserves the non-interactive confirmation error without --yes", async () => {
+    const agentsRepo = await makeAgentsRepo();
+    await useGlobalConfig({ agentsRepo });
+    const project = await setupProjectRepo();
+    process.chdir(project);
+    const inputTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    const outputTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: false });
+    try {
+      await expect(main(["skill", "add", "linting"])).rejects.toThrow(
+        "Confirmation requires an interactive terminal; pass --yes to proceed.",
+      );
+    } finally {
+      if (inputTTY === undefined) {
+        delete (process.stdin as unknown as { isTTY?: boolean }).isTTY;
+      } else {
+        Object.defineProperty(process.stdin, "isTTY", inputTTY);
+      }
+      if (outputTTY === undefined) {
+        delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
+      } else {
+        Object.defineProperty(process.stdout, "isTTY", outputTTY);
+      }
+    }
   });
 });
 
@@ -400,6 +766,9 @@ describe("agents lock and prompts", () => {
     const contents = await readFile(join(root, ".github/pit-agents.lock.json"), "utf8");
     expect(contents.endsWith("\n")).toBe(true);
     expect(contents.indexOf('"alpha"')).toBeLessThan(contents.indexOf('"zeta"'));
+    expect(
+      (await stat(join(root, ".github/pit-agents.lock.json"))).mode & FILE_MODE_MASK,
+    ).toBe(FILE_MODE_NON_EXECUTABLE);
     expect(await readLock(root)).toEqual(lock);
   });
 

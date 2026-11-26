@@ -65,7 +65,27 @@ pit skill list
 The configured repository is cloned temporarily for each listing and removed
 afterward. Listing works outside a Git project; from inside one, names recorded
 in `.github/pit-agents.lock.json` are marked as installed. These commands do
-not write files. Agent and skill add/remove commands are not implemented yet.
+not write files. Agent add/remove commands are not implemented yet.
+
+### `pit skill add` and `pit skill remove`
+
+Install or update a skill from the configured agents repository, or remove a
+skill previously recorded in `.github/pit-agents.lock.json`:
+
+```sh
+pit skill add linting
+pit skill add linting --yes
+pit skill add linting --force --yes
+pit skill remove linting
+```
+
+Skill files are written unstaged. Add previews changes and asks for
+confirmation; `--yes` skips the prompt. Updating an installed skill refreshes
+its files from the latest source commit. A file edited locally blocks an
+update or removal; `--force` backs edited content up under
+`refs/pit/backups/` before replacing or deleting it. Unowned files are never
+overwritten, and skills required by installed agents cannot be removed.
+Removing a skill uses the lock file and does not access the network.
 
 ### `pit fold`
 

@@ -26,7 +26,7 @@ export function classifyCloneError(stderr: string, url: string): Error {
   ];
   if (credentialPatterns.some((pattern) => stderr.includes(pattern))) {
     return new Error(
-      `pit: Git credentials for ${url} were rejected or need an interactive prompt. ` +
+      `Git credentials for ${url} were rejected or need an interactive prompt. ` +
       "Check your SSH key or credential helper.",
     );
   }
@@ -35,10 +35,10 @@ export function classifyCloneError(stderr: string, url: string): Error {
     || stderr.includes("does not appear to be a git repository")
   ) {
     return new Error(
-      `pit: agents repository ${url} does not exist or your credentials cannot access it.`,
+      `Agents repository ${url} does not exist or your credentials cannot access it.`,
     );
   }
-  return new Error(stderr.trim());
+  return new Error(stderr.trim() || `could not clone ${url}`);
 }
 
 async function openRemote(url: string, directory: string): Promise<RemoteRepo> {

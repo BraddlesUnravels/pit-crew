@@ -12,6 +12,7 @@ import {
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { FILE_MODE_EXECUTABLE } from "../src/files";
 import { main } from "../src/cli";
 import { fold } from "../src/commands/fold";
 import { flatFold } from "../src/commands/flat-fold";
@@ -180,7 +181,7 @@ describe("pit fold", () => {
     const hooks = join(repo, ".githooks");
     await mkdir(hooks);
     await writeFile(join(hooks, "pre-commit"), "#!/bin/sh\nexit 1\n");
-    await chmod(join(hooks, "pre-commit"), 0o755);
+    await chmod(join(hooks, "pre-commit"), FILE_MODE_EXECUTABLE);
     await git(["config", "core.hooksPath", ".githooks"]);
     await writeFile(join(repo, "tracked.txt"), "edit to preserve\n");
 
@@ -292,7 +293,7 @@ describe("pit fold -flat", () => {
     const hooks = join(repo, ".githooks");
     await mkdir(hooks);
     await writeFile(join(hooks, "pre-commit"), "#!/bin/sh\nexit 1\n");
-    await chmod(join(hooks, "pre-commit"), 0o755);
+    await chmod(join(hooks, "pre-commit"), FILE_MODE_EXECUTABLE);
     await git(["config", "core.hooksPath", ".githooks"]);
     await flatFold(repo, { base: "main", message: "flattened", yes: true });
     expect(await git(["log", "-1", "--format=%s"])).toBe("flattened");

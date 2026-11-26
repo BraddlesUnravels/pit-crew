@@ -12,7 +12,12 @@ import {
   type TakeFile,
   type TakeRecord,
 } from "../journal";
-import { errorCode, sha256 } from "../files";
+import {
+  errorCode,
+  FILE_MODE_EXECUTABLE,
+  FILE_MODE_NON_EXECUTABLE,
+  sha256,
+} from "../files";
 import { chooseMany, chooseOne, confirm, type Choice } from "../prompt";
 import { reconcilePending } from "../recovery";
 
@@ -386,7 +391,7 @@ export async function take(cwd: string, options: TakeOptions): Promise<void> {
       for (const [index, write] of plan.writes.entries()) {
         await writeFile(join(root, write.destination), write.content, {
           flag: "wx",
-          mode: write.mode === "100755" ? 0o755 : 0o644,
+          mode: write.mode === "100755" ? FILE_MODE_EXECUTABLE : FILE_MODE_NON_EXECUTABLE,
         });
         written.push(files[index]!);
       }

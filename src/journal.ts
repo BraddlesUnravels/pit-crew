@@ -2,6 +2,7 @@ import { mkdir, open, readFile, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { git } from "./git";
+import { FILE_MODE_PRIVATE } from "./files";
 
 export type JournalPhase = "pending" | "completed" | "failed" | "expired";
 
@@ -117,7 +118,7 @@ export async function readJournal(journal: Journal): Promise<JournalRecord[]> {
 }
 
 export async function appendJournal(journal: Journal, record: JournalRecord): Promise<void> {
-  const file = await open(journal.path, "a", 0o600);
+  const file = await open(journal.path, "a", FILE_MODE_PRIVATE);
   try {
     await file.write(`${JSON.stringify(record)}\n`);
     await file.sync();
@@ -141,7 +142,7 @@ export async function withJournalLock<T>(journal: Journal, work: () => Promise<T
   const lockPath = `${journal.path}.lock`;
   let lock;
   try {
-    lock = await open(lockPath, "wx", 0o600);
+    lock = await open(lockPath, "wx", FILE_MODE_PRIVATE);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
       throw new Error(

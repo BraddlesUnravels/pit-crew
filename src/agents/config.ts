@@ -12,7 +12,7 @@ export async function agentsRepoUrl(): Promise<string> {
   }
   if (result.exitCode === 1 || url.length === 0) {
     throw new Error(
-      "pit: no agents repository configured. Set one with: " +
+      "No agents repository configured. Set one with: " +
       "git config --global pit.agentsRepo <url>",
     );
   }

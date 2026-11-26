@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 
+export const FILE_MODE_NON_EXECUTABLE = 0o644;
+export const FILE_MODE_EXECUTABLE = 0o755;
+export const FILE_MODE_PRIVATE = 0o600;
+export const FILE_MODE_MASK = 0o777;
+
 export function sha256(content: Buffer): string {
   return createHash("sha256").update(content).digest("hex");
 }

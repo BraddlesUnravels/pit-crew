@@ -8,7 +8,7 @@ import { flatFold } from "./commands/flat-fold";
 import { take } from "./commands/take";
 import { undo } from "./commands/undo";
 import { agentList } from "./commands/agent";
-import { skillList } from "./commands/skill";
+import { skillAdd, skillList, skillRemove, type SkillOptions } from "./commands/skill";
 import { completeBaseBranches, zshCompletion } from "./completion";
 import type { FoldOptions } from "./commands/fold";
 import type { TakeOptions } from "./commands/take";
@@ -149,6 +149,29 @@ function undoOptions(args: string[]): UndoOptions {
   };
 }
 
+function skillOptions(args: string[]): { name: string; options: SkillOptions } {
+  const { values, positionals } = parseArgs({
+    args,
+    options: {
+      force: { type: "boolean" },
+      yes: { type: "boolean" },
+    },
+    allowPositionals: true,
+    strict: true,
+  });
+  if (positionals.length !== 1) {
+    throw new Error("Usage: pit skill add|remove <name> [--force] [--yes]");
+  }
+  const name = positionals[0];
+  if (name === undefined) {
+    throw new Error("Usage: pit skill add|remove <name> [--force] [--yes]");
+  }
+  return {
+    name,
+    options: { force: values.force ?? false, yes: values.yes ?? false },
+  };
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const [command, ...args] = argv;
   if (command === undefined || command === "--help" || command === "-h") {
@@ -176,7 +199,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (command === "agent" || command === "skill") {
     const [subcommand, ...subcommandArgs] = args;
     if (subcommand === "add" || subcommand === "remove") {
-      throw new Error(`${command} ${subcommand} is not yet implemented.`);
+      if (command === "agent") {
+        throw new Error(`${command} ${subcommand} is not yet implemented.`);
+      }
+      const { name, options } = skillOptions(subcommandArgs);
+      if (subcommand === "add") {
+        await skillAdd(process.cwd(), name, options);
+      } else {
+        await skillRemove(process.cwd(), name, options);
+      }
+      return;
     }
     if (subcommand !== "list" || subcommandArgs.length > 0) {
       throw new Error(`Usage: pit ${command} list|add|remove`);
