@@ -1,6 +1,7 @@
 # pit
 
-`pit` is a local Git helper CLI. It provides `fold`, `take` and `undo`.
+`pit` is a local Git helper CLI. It provides `fold`, `take`, `undo`, and
+read-only listing for Copilot agents and skills.
 The npm package identifier (`pit-crew`) is provisional; the executable name is
 `pit`. Check package-name availability before publishing.
 
@@ -21,6 +22,19 @@ npm link
 Source imports omit file extensions; the build type-checks TypeScript and
 bundles the CLI with esbuild for Node.js.
 
+Run `npm run lint` to check ESLint, or `npm run lint:fix` to apply automatic
+fixes. Run `npm run format:check` to check Prettier formatting, or
+`npm run format` to format the project. TypeScript's type check remains
+separate (`npm run typecheck`). The existing files have not yet been
+reformatted, so the formatting check reports differences until `npm run format`
+is run.
+
+ESLint uses the Babel TypeScript parser because TypeScript-ESLint does not yet
+support the project's TypeScript 7 version. ESLint 9 is used for compatibility
+with that parser; it is no longer supported upstream. The core `no-undef` and
+`no-unused-vars` rules are disabled for TypeScript because they do not
+understand TypeScript syntax.
+
 ### Zsh completion
 
 To enable tab-completion for `pit fold -flat --base`, add the following to
@@ -37,6 +51,21 @@ shell or run the `source` line in the current shell. Completion lists other
 local and remote-tracking branches without fetching.
 
 ## Commands
+
+### `pit agent list` and `pit skill list`
+
+Configure the Git repository that contains your agents and skills:
+
+```sh
+git config --global pit.agentsRepo <url>
+pit agent list
+pit skill list
+```
+
+The configured repository is cloned temporarily for each listing and removed
+afterward. Listing works outside a Git project; from inside one, names recorded
+in `.github/pit-agents.lock.json` are marked as installed. These commands do
+not write files. Agent and skill add/remove commands are not implemented yet.
 
 ### `pit fold`
 

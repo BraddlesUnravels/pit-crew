@@ -41,13 +41,14 @@ export async function chooseMany(
   message: string,
   options: Choice[],
   nonInteractiveMessage: string,
+  required = true,
 ): Promise<string[] | null> {
   requireInteractive(nonInteractiveMessage);
   const answer = await clack.autocompleteMultiselect<string>({
     message,
     options,
     placeholder: "Type to search",
-    required: true,
+    required,
   });
   return clack.isCancel(answer) ? null : answer;
 }

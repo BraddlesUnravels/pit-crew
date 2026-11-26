@@ -7,6 +7,8 @@ import { fold } from "./commands/fold";
 import { flatFold } from "./commands/flat-fold";
 import { take } from "./commands/take";
 import { undo } from "./commands/undo";
+import { agentList } from "./commands/agent";
+import { skillList } from "./commands/skill";
 import { completeBaseBranches, zshCompletion } from "./completion";
 import type { FoldOptions } from "./commands/fold";
 import type { TakeOptions } from "./commands/take";
@@ -20,12 +22,20 @@ function usage(): string {
     "  pit take [branch] [--yes] [-- paths...]",
     "  pit undo [-1|-2|-3] [--force] [--yes]",
     "  pit undo --list",
+    "  pit agent list",
+    "  pit agent add <name> [--force] [--yes]",
+    "  pit agent remove <name> [--force] [--yes]",
+    "  pit skill list",
+    "  pit skill add <name> [--force] [--yes]",
+    "  pit skill remove <name> [--force] [--yes]",
     "  pit completion zsh",
     "",
     "Commands:",
     "  fold      Amend the last commit with selected working changes.",
     "  take      Copy files from another branch into the working tree (unstaged).",
     "  undo      Reverse the latest pit fold or take (-2/-3 for more; up to 3 are kept).",
+    "  agent     List and manage Copilot agents.",
+    "  skill     List and manage Copilot skills.",
     "  completion  Print shell completion setup.",
     "",
     "Options:",
@@ -161,6 +171,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     if (args.length > 0) throw new Error("Unexpected completion arguments.");
     const branches = await completeBaseBranches(process.cwd());
     if (branches.length > 0) process.stdout.write(`${branches.join("\n")}\n`);
+    return;
+  }
+  if (command === "agent" || command === "skill") {
+    const [subcommand, ...subcommandArgs] = args;
+    if (subcommand === "add" || subcommand === "remove") {
+      throw new Error(`${command} ${subcommand} is not yet implemented.`);
+    }
+    if (subcommand !== "list" || subcommandArgs.length > 0) {
+      throw new Error(`Usage: pit ${command} list|add|remove`);
+    }
+    if (command === "agent") {
+      await agentList(process.cwd());
+    } else {
+      await skillList(process.cwd());
+    }
     return;
   }
   if (command !== "fold" && command !== "take" && command !== "undo") {
