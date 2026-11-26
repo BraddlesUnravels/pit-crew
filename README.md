@@ -67,6 +67,18 @@ afterward. Listing works outside a Git project; from inside one, names recorded
 in `.github/pit-agents.lock.json` are marked as installed. These commands do
 not write files. Agent add/remove commands are not implemented yet.
 
+Agent source manifests must include a non-empty string `version`. Older agent
+repositories must add this field before their agents can be listed successfully.
+Deploy a compatible CLI before updating the configured agent repository, and
+push the repository changes before listing them: `pit` clones the configured
+remote. Existing lock entries without a manifest version remain valid and are
+preserved without inventing a version; an invalid version is rejected.
+
+An agent's main file must be named after its folder, such as
+`planner/planner.agent.md`. A manually installed
+`.github/agents/project-planner.agent.md` is not migrated or removed
+automatically. Review and migrate that file manually if needed.
+
 ### `pit skill add` and `pit skill remove`
 
 Install or update a skill from the configured agents repository, or remove a

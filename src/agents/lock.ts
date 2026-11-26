@@ -12,13 +12,15 @@ export interface LockedFile {
 
 export type EntryStatus = "installing" | "installed" | "removing";
 
+type LockedManifest = AgentManifest | (Omit<AgentManifest, "version"> & { version?: never });
+
 export interface AgentsLock {
   version: 1;
   source: { repo: string; commit: string };
   agents: Record<string, {
     status: EntryStatus;
     commit: string;
-    manifest: AgentManifest;
+    manifest: LockedManifest;
     files: LockedFile[];
   }>;
   skills: Record<string, {
@@ -55,8 +57,10 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
-function isManifest(value: unknown): value is AgentManifest {
+function isManifest(value: unknown): value is LockedManifest {
   return isRecord(value)
+    && (!Object.hasOwn(value, "version")
+      || (typeof value.version === "string" && value.version.trim() !== ""))
     && typeof value.agent === "string"
     && (value.workers === undefined || isStringArray(value.workers))
     && (value.skills === undefined || isStringArray(value.skills))

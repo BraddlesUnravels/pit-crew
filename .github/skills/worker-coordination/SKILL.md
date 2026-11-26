@@ -1,5 +1,5 @@
 ---
-name: specialist-communication
+name: worker-coordination
 description: Coordinate cross-specialist design questions through the planner using read-only structured messages. Use when frontend, API, or database design depends on another specialist's input.
 ---
 

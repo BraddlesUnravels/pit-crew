@@ -28,7 +28,7 @@ import {
   classifyCloneError,
   withRemoteClone,
 } from "../src/agents/remote";
-import { listRemoteAgents, listRemoteSkills } from "../src/agents/manifest";
+import { listRemoteAgents, listRemoteSkills, parseManifest } from "../src/agents/manifest";
 import { emptyLock, readLock, writeLock } from "../src/agents/lock";
 import { agentList } from "../src/commands/agent";
 import { main } from "../src/cli";
@@ -62,6 +62,7 @@ async function makeAgentsRepo(spec: AgentsRepoSpec = {}): Promise<string> {
   temporaryPaths.push(root);
   const files: Record<string, string> = {
     "reviewer/agent.manifest.json": JSON.stringify({
+      version: "1.0.0",
       agent: "reviewer",
       workers: ["worker"],
       skills: ["linting"],
@@ -237,6 +238,46 @@ describe("agent source configuration and cloning", () => {
 });
 
 describe("agent manifests and remote listings", () => {
+  it("requires a non-empty source manifest version and preserves valid versions", async () => {
+    const url = await makeAgentsRepo();
+    await withRemoteClone(url, async (remote) => {
+      expect(() => parseManifest("reviewer", { agent: "reviewer" }, remote))
+        .toThrow("Version in reviewer/agent.manifest.json must be a non-empty string.");
+      for (const version of [undefined, null, 1, "", " \t "]) {
+        expect(() => parseManifest("reviewer", { agent: "reviewer", version }, remote))
+          .toThrow("Version in reviewer/agent.manifest.json must be a non-empty string.");
+      }
+      expect(parseManifest("reviewer", { agent: "reviewer", version: "1.2.3" }, remote).manifest)
+        .toEqual({ agent: "reviewer", version: "1.2.3" });
+      expect(() => parseManifest("reviewer", {
+        agent: "reviewer", version: "1.2.3", unexpected: true,
+      }, remote)).toThrow('Unknown key "unexpected"');
+    });
+  });
+
+  it("reports versionless remote agents while listing the planner under its folder name", async () => {
+    const url = await makeAgentsRepo({
+      files: {
+        "legacy/agent.manifest.json": JSON.stringify({ agent: "legacy" }),
+        "legacy/legacy.agent.md": "Legacy agent.",
+        "planner/agent.manifest.json": JSON.stringify({ version: "1", agent: "planner" }),
+        "planner/planner.agent.md": "Planner agent.",
+      },
+    });
+    await withRemoteClone(url, async (remote) => {
+      const agents = await listRemoteAgents(remote);
+      expect(agents.find((entry) => entry.name === "legacy")?.error?.message)
+        .toContain("Version in legacy/agent.manifest.json must be a non-empty string.");
+      expect(agents.find((entry) => entry.name === "planner")).toMatchObject({
+        manifest: { version: "1", agent: "planner" },
+        files: [expect.objectContaining({
+          sourcePath: "planner/planner.agent.md",
+          targetPath: ".github/agents/planner.agent.md",
+        })],
+      });
+    });
+  });
+
   it.each(["../x", "a/b"])("rejects invalid names %s with manifest context", (name) => {
     expect(() => assertName("agent", name, "checker/agent.manifest.json"))
       .toThrow(`"${name}" in checker/agent.manifest.json`);
@@ -252,16 +293,18 @@ describe("agent manifests and remote listings", () => {
   it("keeps a broken agent isolated while listing other agents", async () => {
     const url = await makeAgentsRepo({
       files: {
-        "broken/agent.manifest.json": JSON.stringify({ agent: "different" }),
+        "broken/agent.manifest.json": JSON.stringify({ version: "1", agent: "different" }),
         "broken/broken.agent.md": "Broken agent.",
-        "missing/agent.manifest.json": JSON.stringify({ agent: "missing", workers: ["absent"] }),
+        "missing/agent.manifest.json": JSON.stringify({ version: "1", agent: "missing", workers: ["absent"] }),
         "missing/missing.agent.md": "Missing worker agent.",
         "missing-script/agent.manifest.json": JSON.stringify({
+          version: "1",
           agent: "missing-script",
           scripts: ["absent.sh"],
         }),
         "missing-script/missing-script.agent.md": "Missing script agent.",
         "missing-skill/agent.manifest.json": JSON.stringify({
+          version: "1",
           agent: "missing-skill",
           skills: ["absent"],
         }),
@@ -302,6 +345,10 @@ describe("agent manifests and remote listings", () => {
     await withRemoteClone(validUrl, async (remote) => {
       const reviewer = (await listRemoteAgents(remote)).find((entry) => entry.name === "reviewer");
       expect(reviewer?.files.find((file) => file.sourcePath.endsWith("audit.sh"))?.mode).toBe("100755");
+      expect(reviewer?.files).toContainEqual(expect.objectContaining({
+        sourcePath: "reviewer/reviewer.agent.md",
+        targetPath: ".github/agents/reviewer.agent.md",
+      }));
     });
   });
 
@@ -753,13 +800,13 @@ describe("agents lock and prompts", () => {
     lock.agents.zeta = {
       status: "installed",
       commit: "abc",
-      manifest: { agent: "zeta" },
+      manifest: { version: "1.0.0", agent: "zeta" },
       files: [],
     };
     lock.agents.alpha = {
       status: "installed",
       commit: "abc",
-      manifest: { agent: "alpha" },
+      manifest: { version: "2.0.0", agent: "alpha" },
       files: [],
     };
     await writeLock(root, lock);
@@ -770,6 +817,35 @@ describe("agents lock and prompts", () => {
       (await stat(join(root, ".github/pit-agents.lock.json"))).mode & FILE_MODE_MASK,
     ).toBe(FILE_MODE_NON_EXECUTABLE);
     expect(await readLock(root)).toEqual(lock);
+  });
+
+  it("preserves versionless legacy lock entries and rejects invalid stored manifest versions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pit-lock-legacy-"));
+    temporaryPaths.push(root);
+    await mkdir(join(root, ".github"));
+    const path = join(root, ".github/pit-agents.lock.json");
+    const lock = emptyLock({ url: "file:///agents", commit: "abc" });
+    lock.agents.reviewer = {
+      status: "installed",
+      commit: "abc",
+      manifest: { agent: "reviewer" },
+      files: [],
+    };
+    await writeFile(path, JSON.stringify(lock));
+    const legacy = await readLock(root);
+    expect(legacy).toEqual(lock);
+    await writeLock(root, legacy);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual(lock);
+
+    for (const version of [null, 1, "", " \t "]) {
+      await writeFile(path, JSON.stringify({
+        ...lock,
+        agents: {
+          reviewer: { ...lock.agents.reviewer, manifest: { agent: "reviewer", version } },
+        },
+      }));
+      await expect(readLock(root)).rejects.toThrow("the lock file has an invalid structure");
+    }
   });
 
   it("rejects malformed or unknown-version lock files with repair guidance", async () => {

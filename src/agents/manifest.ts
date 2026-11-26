@@ -2,6 +2,7 @@ import { resolveInside, assertName } from "./names";
 import type { RemoteEntry, RemoteRepo } from "./remote";
 
 export interface AgentManifest {
+  version: string;
   agent: string;
   workers?: string[];
   skills?: string[];
@@ -37,8 +38,8 @@ export interface RemoteSkill {
   error?: Error;
 }
 
-const allowedTargetDirs = [".github/agents", ".github/skills", ".github/scripts"];
-const allowedManifestKeys = new Set(["agent", "workers", "skills", "scripts", "uses"]);
+const allowedTargetDirs = [".github/agents", ".github/skills", ".github/scripts", ".github/instructions"];
+const allowedManifestKeys = new Set(["version", "agent", "workers", "skills", "scripts", "uses"]);
 
 function assertOnlyKeys(value: Record<string, unknown>, keys: Set<string>, context: string): void {
   for (const key of Object.keys(value)) {
@@ -134,6 +135,9 @@ export function parseManifest(folder: string, json: unknown, remote: RemoteRepo)
   const context = `${folder}/agent.manifest.json`;
   const object = asObject(json, context);
   assertOnlyKeys(object, allowedManifestKeys, context);
+  if (typeof object.version !== "string" || object.version.trim() === "") {
+    throw new Error(`Version in ${context} must be a non-empty string.`);
+  }
   assertName("agent", object.agent, context);
   if (object.agent !== folder) {
     throw new Error(`Agent name "${object.agent}" in ${context} does not match folder "${folder}".`);
@@ -199,6 +203,7 @@ export function parseManifest(folder: string, json: unknown, remote: RemoteRepo)
   }
   return {
     manifest: {
+      version: object.version,
       agent: object.agent,
       ...(workers === undefined ? {} : { workers }),
       ...(skills === undefined ? {} : { skills }),
